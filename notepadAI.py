@@ -12,7 +12,6 @@ import os
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 API_KEY = "AIzaSyCOTWK12YPwattWYvn1QGxaXyISxK4PpI0"
-CHAT_DATA = []
 
 def post_prompt(chat_data, api_key):
     """Sends a request to the API and returns the response."""
@@ -29,7 +28,6 @@ def post_prompt(chat_data, api_key):
             first_candidate = response_json['candidates'][0]
             if 'content' in first_candidate and 'parts' in first_candidate['content'] and first_candidate['content']['parts']:
                 response_text = first_candidate['content']['parts'][0].get('text', '')
-                chat_data.append({"parts": [{"text": response_text}], "role": "model"})
                 return response_text
         logging.warning("The response contains no candidates.")
         return None
@@ -40,39 +38,74 @@ def post_prompt(chat_data, api_key):
         logging.error(f"Error parsing the JSON response: {e}")
         return None
 
-def get_prompt(text, keyword):
-    """Extracts the text between two keywords."""
-    pattern = r'\b' + re.escape(keyword) + r'\b(.*?)\b' + re.escape(keyword) + r'\b'
+def get_prompt(text):
+    """Extracts all prompts from the text using the original pattern."""
+    pattern = r'\b_prompt\b(.*?)\b_prompt\b'
     matches = re.findall(pattern, text, re.DOTALL)
-    return matches
+    return [match.strip() for match in matches]
 
-def process_file(file_path, prev_prompt, chat_data, api_key):
+def get_answers(text):
+    """Extracts all answers from the text."""
+    pattern = r'_answer ---------\s*\n\n(.*?)\n ----------------'
+    matches = re.findall(pattern, text, re.DOTALL)
+    return [match.strip() for match in matches]
+
+def build_chat_data(prompts, answers):
+    """Builds the chat data from prompts and answers."""
+    chat_data = []
+    
+    # Add complete prompt-answer pairs
+    for i in range(min(len(prompts), len(answers))):
+        chat_data.append({"parts": [{"text": prompts[i]}], "role": "user"})
+        chat_data.append({"parts": [{"text": answers[i]}], "role": "model"})
+    
+    # Add the last prompt if there's one more prompt than answers
+    if len(prompts) > len(answers):
+        chat_data.append({"parts": [{"text": prompts[-1]}], "role": "user"})
+        
+    return chat_data
+
+def process_file(file_path, file_data):
     """Reads the file, processes the prompt, and writes the response back."""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             cur_content = f.read()
-
-        prompts = get_prompt(cur_content, "_prompt")
-        if prompts:
-            latest_prompt = prompts[-1].strip()
-
-            if latest_prompt != prev_prompt:
-                logging.info(f"Sending prompt: {latest_prompt}")
-                chat_data.append({"parts": [{"text": latest_prompt}], "role": "user"})
-
-                answer = post_prompt(chat_data, api_key)
-                if answer:
-                    logging.info(f"Received response: {answer}")
-                    with open(file_path, "a", encoding="utf-8") as f:
-                        f.write(f"\n\n_answer --------- \n\n{answer}\n ----------------")
-                    return latest_prompt
-    except FileNotFoundError:
-        logging.error(f"The file {file_path} was not found.")
-    except re.error as e:
-        logging.error(f"Regex error: {e}")
+        
+        # Extract all prompts and answers
+        all_prompts = get_prompt(cur_content)
+        all_answers = get_answers(cur_content)
+        
+        # Build the chat data
+        chat_data = build_chat_data(all_prompts, all_answers)
+        
+        # Check if there's a prompt without an answer
+        if len(all_prompts) > len(all_answers):
+            latest_prompt = all_prompts[-1]
+            logging.info(f"Found new prompt to process: {latest_prompt}")
+            
+            # Get response from API
+            answer = post_prompt(chat_data, file_data["api_key"])
+            
+            if answer:
+                logging.info(f"Received response: {answer}")
+                
+                # Append the answer to the file
+                with open(file_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n\n_answer ---------\n\n{answer}\n ----------------")
+                
+                # Update file data with the new chat
+                file_data["chat_data"] = chat_data + [{"parts": [{"text": answer}], "role": "model"}]
+                return True
+        else:
+            logging.info(f"No new prompt to process for file: {file_path}")
+            file_data["chat_data"] = chat_data
+            
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-    return prev_prompt
+        logging.error(f"An error occurred while processing {file_path}: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return False
 
 def select_folder():
     """Opens a GUI to select a folder and returns the selected path."""
@@ -88,27 +121,40 @@ def find_text_files(folder_path, prefix):
     """Finds all .txt files in the folder with the specified prefix."""
     text_files = []
     for file_name in os.listdir(folder_path):
-        if file_name.startswith(prefix) and file_name.endswith(".txt"):
-            text_files.append(os.path.join(folder_path, file_name))
+        if file_name.startswith(prefix):
+            data = {
+                "path": os.path.join(folder_path, file_name),
+                "name": file_name,
+                "chat_data": [],
+                "api_key": API_KEY
+            }
+            text_files.append(data)
     return text_files
 
 if __name__ == "__main__":
     folder_path = select_folder()
     if folder_path:
-        prefix = "_ai" 
+        prefix = "np_ai"
+        files_data = {}
 
         while True:
             text_files = find_text_files(folder_path, prefix)
             if not text_files:
                 logging.info("No matching text files found. Waiting...")
-                time.sleep(2)  # Wait before checking again
+                time.sleep(2)  
                 continue
 
-            # Process the first matching file
-            file_path = text_files[0]
-            logging.info(f"Using file for chat: {file_path}")
-
-            prev_prompt = ""
-            while True:
-                prev_prompt = process_file(file_path, prev_prompt, CHAT_DATA, API_KEY)
-                time.sleep(1)  # Reduce CPU usage
+            # Process each file
+            for file in text_files:
+                file_path = file["path"]
+                
+                # Initialize file_data if its a new file
+                if file_path not in files_data:
+                    files_data[file_path] = file
+                
+                if os.path.exists(file_path):
+                    process_file(file_path, files_data[file_path])
+                else:
+                    logging.warning(f"File {file_path} does not exist. Skipping.")
+            
+            time.sleep(2)  # Wait before checking files again
