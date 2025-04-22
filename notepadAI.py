@@ -140,7 +140,7 @@ if __name__ == "__main__":
         while True:
             text_files = find_text_files(folder_path, prefix)
             if not text_files:
-                logging.info("No matching text files found. Waiting...")
+                logging.info("No matching files found. Waiting...")
                 time.sleep(2)  
                 continue
 
