@@ -7,11 +7,10 @@ from datetime import datetime
 from tkinter import Tk
 from tkinter.filedialog import askdirectory
 import os
+from api_config import API_KEY
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-API_KEY = "AIzaSyCOTWK12YPwattWYvn1QGxaXyISxK4PpI0"
 
 def post_prompt(chat_data, api_key):
     """Sends a request to the API and returns the response."""
